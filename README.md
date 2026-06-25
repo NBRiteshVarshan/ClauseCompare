@@ -20,7 +20,7 @@ All processing happens locally on your machine—no cloud APIs, no data transmis
 
 ## 🏗️ Architecture
 
-
+```text
 Document A ─┐
             ├── Parser (PDF/DOCX/Text)
 Document B ─┘
@@ -34,6 +34,7 @@ Local LLM (Qwen / Phi via Ollama)
 Structured JSON Output
          ↓
 Streamlit UI Dashboard
+```
 
 ---
 
