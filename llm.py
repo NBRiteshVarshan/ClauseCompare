@@ -2,25 +2,26 @@ import ollama
 import json
 from schemas import ClauseDiff
 
-def compare_clause(clause_id: str, a: str, b: str) -> dict:
-    """Queries local Ollama instance with fallback JSON parsing logic."""
-    prompt = f"""You are an expert contract compliance auditor. Compare Version A and Version B of [{clause_id}] for semantic variations.
+def compare_clause(a: str, b: str) -> dict:
+    """Queries local Ollama to determine if two text blocks share the same legal topic."""
+    prompt = f"""You are a semantic analyzer. Your job is to determine if Text A and Text B are discussing the SAME underlying topic, rule, or obligation, even if the wording or language is completely different.
 
-CRITICAL INSTRUCTIONS: 
-1. Ignore changes in section titles, numbering, or formatting.
-2. Pay strict attention to numeric shifts, currency updates, liability limits, and day/deadline numbers. If a dollar figure or timeline changes, it is a critical modification. You must classify it as "Obligation Shifted" or "Wording Modified".
+CRITICAL INSTRUCTIONS:
+1. If they discuss completely different topics (e.g., one is about Termination, the other is about Payment), set "is_same_topic" to false and "change_type" to "Completely Different".
+2. If they DO discuss the same topic, set "is_same_topic" to true. Then analyze how the obligation changed.
+3. Pay aggressive attention to numbers, dates, and money. If those change, it is an "Obligation Shifted".
 
-VERSION A:
+TEXT A:
 {a}
 
-VERSION B:
+TEXT B:
 {b}
 """
 
     response = ollama.chat(
-        model="qwen2.5:7b",  # Swap with phi4-mini if running on limited RAM
+        model="qwen2.5:7b",
         messages=[
-            {"role": "system", "content": "You analyze text variations. You must return data conforming strictly to the requested JSON schema layout configuration."},
+            {"role": "system", "content": "You analyze text variations. You must return data conforming strictly to the requested JSON schema."},
             {"role": "user", "content": prompt}
         ],
         format=ClauseDiff.model_json_schema(),
@@ -37,7 +38,8 @@ VERSION B:
             return validated.model_dump()
         except Exception:
             return {
-                "change_type": "Wording Modified",
-                "summary": "Mismatched textual elements found. JSON parsing error hit local model limits.",
+                "is_same_topic": False,
+                "change_type": "Completely Different",
+                "summary": "JSON parsing error.",
                 "risk": "None"
             }

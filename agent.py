@@ -1,24 +1,8 @@
-import difflib
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from parser import extract_text, split_clauses
 from llm import compare_clause
 
-def find_best_match(text_a: str, doc_b_dict: dict) -> tuple:
-    """Finds the most structurally similar clause in Document B using fuzzy text matching."""
-    best_match_key = None
-    best_score = 0.0
-
-    for key_b, text_b in doc_b_dict.items():
-        # difflib compares text similarity on a scale of 0.0 to 1.0
-        score = difflib.SequenceMatcher(None, text_a, text_b).ratio()
-        if score > best_score:
-            best_score = score
-            best_match_key = key_b
-
-    return best_match_key, best_score
-
 def run_diff(file_a, file_b) -> dict:
-    """Orchestrates fuzzy structural alignment and concurrent LLM semantic comparisons."""
+    """Executes a dual-pass cross-cartesian semantic match between two documents."""
     bytes_a = file_a.getvalue()
     bytes_b = file_b.getvalue()
     
@@ -31,65 +15,67 @@ def run_diff(file_a, file_b) -> dict:
     report = {
         "added": [],
         "removed": [],
-        "moved": [],  # NEW: Tracks clauses that changed section numbers
         "modified": {}
     }
 
     matched_b_keys = set()
-    mismatched_tasks = []
+    matched_a_keys = set()
 
-    # 1. Map Document A to Document B based on content similarity, NOT headers
-    for key_a, text_a in doc_a.items():
-        best_key_b, score = find_best_match(text_a, doc_b)
+    # ==========================================
+    # PASS 1: Exact Match Fast-Track (Saves CPU)
+    # ==========================================
+    for key_a, val_a in doc_a.items():
+        for key_b, val_b in doc_b.items():
+            if key_b in matched_b_keys:
+                continue
+            # If the text is perfectly identical, pair them instantly
+            if val_a.strip() == val_b.strip():
+                matched_a_keys.add(key_a)
+                matched_b_keys.add(key_b)
+                break
 
-        # Threshold for considering it the "same" clause (55% similar)
-        if best_key_b and score > 0.55:
-            matched_b_keys.add(best_key_b)
-            text_b = doc_b[best_key_b]
+    # Extract only the clauses that actually have differences
+    remaining_a = {k: v for k, v in doc_a.items() if k not in matched_a_keys}
+    remaining_b = {k: v for k, v in doc_b.items() if k not in matched_b_keys}
 
-            # Track if the header/numbering changed
-            if key_a != best_key_b:
-                report["moved"].append({"from": key_a, "to": best_key_b})
-
-            # Check if the text actually changed (ignoring exact matches)
-            if text_a.strip() != text_b.strip():
-                # Pass the context of the move to the LLM UI
-                identifier = f"{key_a} (Moved to {best_key_b})" if key_a != best_key_b else key_a
-                mismatched_tasks.append((identifier, text_a, text_b))
-        else:
-            # If no match > 55% similarity is found, it was completely removed
+    # ==========================================
+    # PASS 2: LLM Semantic Cross-Matching
+    # ==========================================
+    for key_a, text_a in remaining_a.items():
+        match_found = False
+        
+        # We iterate over a list so we can safely delete items from remaining_b when found
+        for key_b, text_b in list(remaining_b.items()):
+            print(f"[DEBUG] Comparing {key_a} against {key_b}...")
+            
+            # Call the LLM to ask: "Are these the same topic?"
+            analysis = compare_clause(text_a, text_b)
+            
+            if analysis.get("is_same_topic"):
+                print(f" -> MATCH FOUND! {key_a} maps to {key_b}")
+                match_found = True
+                matched_b_keys.add(key_b)
+                del remaining_b[key_b] # Mark Document 2 clause as True (remove from pool)
+                
+                # Render the UI name correctly if headers changed
+                ui_identifier = f"{key_a} ➔ {key_b}" if key_a != key_b else key_a
+                
+                # Sanitize risk capitalization
+                raw_risk = analysis.get("risk", "Low")
+                analysis["risk"] = raw_risk.strip().capitalize() if raw_risk else "None"
+                
+                report["modified"][ui_identifier] = analysis
+                break # Break inner loop, move to next Document 1 clause
+                
+        # If it checked every clause in Doc 2 and found no match, it was removed
+        if not match_found:
             report["removed"].append({"clause": key_a, "content": text_a})
 
-    # 2. Identify Added Clauses (Anything in B that wasn't matched to A)
-    for key_b, text_b in doc_b.items():
-        if key_b not in matched_b_keys:
-            report["added"].append({"clause": key_b, "content": text_b})
-
-    # 3. Parallelized Local Semantic Diff Engine via Thread Pools
-    if mismatched_tasks:
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(compare_clause, task[0], task[1], task[2]): task[0] 
-                for task in mismatched_tasks
-            }
-            
-            for future in as_completed(futures):
-                clause_key = futures[future]
-                try:
-                    analysis_result = future.result()
-                    
-                    # Sanitize schema literals
-                    raw_risk = analysis_result.get("risk", "Low")
-                    analysis_result["risk"] = raw_risk.strip().capitalize() if raw_risk else "None"
-                    
-                    if analysis_result.get("change_type") != "No Material Change":
-                        report["modified"][clause_key] = analysis_result
-                except Exception as e:
-                    print(f"[ERROR] Worker failed for {clause_key}: {e}")
-                    report["modified"][clause_key] = {
-                        "change_type": "Wording Modified",
-                        "summary": f"Worker thread crashed: {str(e)}",
-                        "risk": "High"
-                    }
+    # ==========================================
+    # PASS 3: Catch Leftovers in Document 2
+    # ==========================================
+    # Any clause in Doc 2 not marked as matched is a brand new addition
+    for key_b, text_b in remaining_b.items():
+        report["added"].append({"clause": key_b, "content": text_b})
 
     return report
