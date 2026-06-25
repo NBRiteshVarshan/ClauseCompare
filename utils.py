@@ -4,15 +4,17 @@ import json
 from typing import List, Dict, Any
 from datetime import datetime
 import numpy as np
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+import io
 
 # ------------------------------------------------------------
 # Helper to recursively convert NumPy types to Python natives
 # ------------------------------------------------------------
 def sanitize_for_json(obj):
-    """
-    Recursively convert any NumPy types to native Python types
-    so that json.dump works without custom encoders.
-    """
     if isinstance(obj, (np.float32, np.float64)):
         return float(obj)
     if isinstance(obj, (np.int32, np.int64)):
@@ -29,67 +31,54 @@ def sanitize_for_json(obj):
 # Utility functions
 # ------------------------------------------------------------
 def clean_text(text: str) -> str:
-    """Clean and normalize text for processing"""
     text = re.sub(r'\s+', ' ', text)
     text = re.sub(r'[^\w\s\.\,\;\:\-\"\'\?\$\%\&\(\)]', '', text)
     return text.strip()
 
 def generate_clause_id(text: str, document_name: str) -> str:
-    """Generate unique ID for each clause for caching"""
     content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
     doc_hash = hashlib.md5(document_name.encode()).hexdigest()[:6]
     return f"{doc_hash}_{content_hash}"
 
 def format_report(results: Dict) -> str:
-    """Format comparison results as a readable report"""
-    report = []
-    report.append("=" * 80)
-    report.append("LEGAL DOCUMENT COMPARISON REPORT")
-    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    report.append("=" * 80)
+    """Plain text report (for TXT download)."""
+    lines = []
+    lines.append("=" * 80)
+    lines.append("LEGAL DOCUMENT COMPARISON REPORT")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 80)
 
-    # Clauses only in Document 1
-    report.append("\n📄 CLAUSES IN DOCUMENT 1 BUT NOT IN DOCUMENT 2")
-    report.append("-" * 60)
+    lines.append("\n📄 CLAUSES IN DOCUMENT 1 BUT NOT IN DOCUMENT 2")
+    lines.append("-" * 60)
     for idx, clause in enumerate(results.get('only_in_doc1', []), 1):
-        report.append(f"{idx}. {clause['text']}")
+        lines.append(f"{idx}. {clause['text']}")
         if clause.get('closest_match'):
-            report.append(f"   → Closest match in Doc2: {clause['closest_match'][:100]}...")
-            report.append(f"   → Similarity score: {clause.get('similarity', 0):.2f}")
-        report.append("")
+            lines.append(f"   → Closest match in Doc2: {clause['closest_match'][:100]}...")
+            lines.append(f"   → Similarity score: {clause.get('similarity', 0):.2f}")
+        lines.append("")
 
-    # Clauses only in Document 2
-    report.append("\n📄 CLAUSES IN DOCUMENT 2 BUT NOT IN DOCUMENT 1")
-    report.append("-" * 60)
+    lines.append("\n📄 CLAUSES IN DOCUMENT 2 BUT NOT IN DOCUMENT 1")
+    lines.append("-" * 60)
     for idx, clause in enumerate(results.get('only_in_doc2', []), 1):
-        report.append(f"{idx}. {clause['text']}")
+        lines.append(f"{idx}. {clause['text']}")
         if clause.get('closest_match'):
-            report.append(f"   → Closest match in Doc1: {clause['closest_match'][:100]}...")
-            report.append(f"   → Similarity score: {clause.get('similarity', 0):.2f}")
-        report.append("")
+            lines.append(f"   → Closest match in Doc1: {clause['closest_match'][:100]}...")
+            lines.append(f"   → Similarity score: {clause.get('similarity', 0):.2f}")
+        lines.append("")
 
-    # Summary statistics
-    report.append("\n📊 SUMMARY STATISTICS")
-    report.append("-" * 60)
-    report.append(f"Total clauses in Document 1: {results.get('total_doc1', 0)}")
-    report.append(f"Total clauses in Document 2: {results.get('total_doc2', 0)}")
-    report.append(f"Clauses only in Document 1: {len(results.get('only_in_doc1', []))}")
-    report.append(f"Clauses only in Document 2: {len(results.get('only_in_doc2', []))}")
-    report.append(f"Matching clauses found: {results.get('matching_count', 0)}")
-    report.append(f"Comparison time: {results.get('processing_time', 0):.2f} seconds")
-    report.append("=" * 80)
+    lines.append("\n📊 SUMMARY STATISTICS")
+    lines.append("-" * 60)
+    lines.append(f"Total clauses in Document 1: {results.get('total_doc1', 0)}")
+    lines.append(f"Total clauses in Document 2: {results.get('total_doc2', 0)}")
+    lines.append(f"Clauses only in Document 1: {len(results.get('only_in_doc1', []))}")
+    lines.append(f"Clauses only in Document 2: {len(results.get('only_in_doc2', []))}")
+    lines.append(f"Matching clauses found: {results.get('matching_count', 0)}")
+    lines.append(f"Comparison time: {results.get('processing_time', 0):.2f} seconds")
+    lines.append("=" * 80)
+    return "\n".join(lines)
 
-    return "\n".join(report)
-
-def save_report(results: Dict, filename: str = None):
-    """
-    Save comparison results to a JSON file.
-    This version explicitly sanitises all NumPy types before serialisation.
-    """
-    if not filename:
-        filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-    # 1. Build a dictionary with only the keys we want
+def save_report(results: Dict, filename: str = None) -> str:
+    """Return JSON string (no file write unless filename provided)."""
     clean_results = {
         'only_in_doc1': results.get('only_in_doc1', []),
         'only_in_doc2': results.get('only_in_doc2', []),
@@ -99,26 +88,183 @@ def save_report(results: Dict, filename: str = None):
         'processing_time': results.get('processing_time', 0),
         'timestamp': datetime.now().isoformat()
     }
-
-    # 2. Sanitise the entire dictionary (recursive)
     sanitised = sanitize_for_json(clean_results)
-
-    # 3. Write JSON – now all values are standard Python types
-    with open(filename, 'w') as f:
-        json.dump(sanitised, f, indent=2)
-
-    return filename
+    json_str = json.dumps(sanitised, indent=2)
+    if filename:
+        with open(filename, 'w') as f:
+            f.write(json_str)
+    return json_str
 
 # ------------------------------------------------------------
-# (Optional) Debug helper – find any stray float32 in results
+# Helper for categorisation (used in app and PDF)
 # ------------------------------------------------------------
-def find_numpy_types(obj, path=""):
-    """Print locations of any NumPy types in a nested structure."""
-    if isinstance(obj, (np.float32, np.float64, np.int32, np.int64, np.ndarray)):
-        print(f"Found {type(obj)} at: {path}")
-    elif isinstance(obj, dict):
-        for k, v in obj.items():
-            find_numpy_types(v, f"{path}.{k}" if path else k)
-    elif isinstance(obj, (list, tuple)):
-        for i, item in enumerate(obj):
-            find_numpy_types(item, f"{path}[{i}]")
+def categorize_results(results, doc1_clauses, doc2_clauses):
+    """
+    Returns three lists: exact_matches, partial_matches, unique_clauses.
+    """
+    exact = []
+    partial = []
+    unique = []
+    matching_details = results.get('matching_details', [])
+    
+    # Process doc1 clauses
+    for detail in matching_details:
+        sim = detail.get('top_similarity', 0.0)
+        idx = detail.get('top_match_idx', -1)
+        clause1_text = detail['clause_text']
+        clause1_num = detail.get('clause_number', '')
+        if idx >= 0 and idx < len(doc2_clauses):
+            clause2 = doc2_clauses[idx]
+            clause2_text = clause2['text']
+            clause2_num = clause2.get('number', '')
+            if sim >= 0.999:
+                exact.append({
+                    'doc1_num': clause1_num,
+                    'doc1_text': clause1_text,
+                    'doc2_num': clause2_num,
+                    'doc2_text': clause2_text,
+                    'similarity': sim
+                })
+            elif sim >= 0.5:
+                partial.append({
+                    'doc1_num': clause1_num,
+                    'doc1_text': clause1_text,
+                    'doc2_num': clause2_num,
+                    'doc2_text': clause2_text,
+                    'similarity': sim
+                })
+            else:
+                unique.append({
+                    'text': clause1_text,
+                    'document': 'Document 1',
+                    'number': clause1_num,
+                    'similarity': sim
+                })
+        else:
+            unique.append({
+                'text': clause1_text,
+                'document': 'Document 1',
+                'number': clause1_num,
+                'similarity': 0.0
+            })
+    
+    # Doc2 unique (similarity < 0.5)
+    doc2_best_sims = results.get('doc2_best_similarities', [])
+    if doc2_best_sims:
+        for j, sim in enumerate(doc2_best_sims):
+            if sim < 0.5:
+                clause = doc2_clauses[j]
+                unique.append({
+                    'text': clause['text'],
+                    'document': 'Document 2',
+                    'number': clause.get('number', str(j+1)),
+                    'similarity': sim
+                })
+    else:
+        for clause in results.get('only_in_doc2', []):
+            sim = clause.get('similarity', 0.0)
+            if sim < 0.5:
+                unique.append({
+                    'text': clause['text'],
+                    'document': 'Document 2',
+                    'number': clause.get('number', ''),
+                    'similarity': sim
+                })
+    unique.sort(key=lambda x: x['similarity'], reverse=True)
+    return exact, partial, unique
+
+# ------------------------------------------------------------
+# PDF report generator
+# ------------------------------------------------------------
+def generate_pdf_report(results, doc1_clauses, doc2_clauses,
+                        doc1_name="Document 1", doc2_name="Document 2") -> bytes:
+    """Generate a PDF report using reportlab."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter,
+                            rightMargin=72, leftMargin=72,
+                            topMargin=72, bottomMargin=72)
+    styles = getSampleStyleSheet()
+    title_style = styles['Title']
+    heading_style = styles['Heading2']
+    normal_style = styles['Normal']
+    
+    clause_style = ParagraphStyle(
+        'ClauseStyle',
+        parent=styles['Normal'],
+        fontSize=9,
+        leading=12,
+        leftIndent=20,
+        spaceAfter=6,
+        fontName='Helvetica'
+    )
+    
+    story = []
+    # Title
+    story.append(Paragraph("Legal Document Comparison Report", title_style))
+    story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", normal_style))
+    story.append(Spacer(1, 0.25*inch))
+    
+    # Summary
+    story.append(Paragraph("Summary Statistics", heading_style))
+    summary_data = [
+        ['Metric', 'Value'],
+        ['Total Clauses in Document 1', str(results['total_doc1'])],
+        ['Total Clauses in Document 2', str(results['total_doc2'])],
+        ['Matching Clauses', str(results['matching_count'])],
+        ['Clauses only in Doc 1', str(len(results.get('only_in_doc1', [])))],
+        ['Clauses only in Doc 2', str(len(results.get('only_in_doc2', [])))],
+        ['Processing Time', f"{results['processing_time']:.2f} seconds"],
+    ]
+    table = Table(summary_data, colWidths=[2.5*inch, 1.5*inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.grey),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 12),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12),
+        ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+        ('GRID', (0,0), (-1,-1), 1, colors.black),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 0.25*inch))
+    
+    # Get categories
+    exact, partial, unique = categorize_results(results, doc1_clauses, doc2_clauses)
+    
+    # Exact matches
+    story.append(PageBreak())
+    story.append(Paragraph(f"Exact Matches (Similarity ≥ 0.999) — {len(exact)} pairs", heading_style))
+    for match in exact:
+        story.append(Paragraph(f"Doc1 Clause {match['doc1_num']}: {match['doc1_text'][:200]}...", clause_style))
+        story.append(Paragraph(f"Doc2 Clause {match['doc2_num']}: {match['doc2_text'][:200]}...", clause_style))
+        story.append(Paragraph(f"Similarity: {match['similarity']:.3f}", normal_style))
+        story.append(Spacer(1, 0.1*inch))
+    if not exact:
+        story.append(Paragraph("No exact matches found.", normal_style))
+    
+    # Partial matches
+    story.append(PageBreak())
+    story.append(Paragraph(f"Partial Matches (0.5 ≤ Similarity < 0.999) — {len(partial)} pairs", heading_style))
+    for match in partial:
+        story.append(Paragraph(f"Doc1 Clause {match['doc1_num']}: {match['doc1_text'][:200]}...", clause_style))
+        story.append(Paragraph(f"Doc2 Clause {match['doc2_num']}: {match['doc2_text'][:200]}...", clause_style))
+        story.append(Paragraph(f"Similarity: {match['similarity']:.3f}", normal_style))
+        story.append(Spacer(1, 0.1*inch))
+    if not partial:
+        story.append(Paragraph("No partial matches found.", normal_style))
+    
+    # Unique clauses
+    story.append(PageBreak())
+    story.append(Paragraph(f"Unique Clauses (Similarity < 0.5) — {len(unique)} clauses", heading_style))
+    for clause in unique:
+        story.append(Paragraph(f"{clause['document']} – Clause {clause['number']}: {clause['text'][:200]}...", clause_style))
+        story.append(Paragraph(f"Best similarity: {clause['similarity']:.3f}", normal_style))
+        story.append(Spacer(1, 0.1*inch))
+    if not unique:
+        story.append(Paragraph("All clauses have a good match (similarity ≥ 0.5).", normal_style))
+    
+    doc.build(story)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes

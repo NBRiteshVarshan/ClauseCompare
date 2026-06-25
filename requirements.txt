@@ -9,3 +9,4 @@ pandas>=2.1.0
 plotly>=5.18.0
 torch>=2.0.0
 transformers>=4.30.0
+reportlab>=4.0.0
