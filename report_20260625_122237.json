@@ -1,0 +1,37 @@
+{
+  "only_in_doc1": [
+    {
+      "text": "Either party may terminate this Agreement at any time, without cause, by providing the other party with at least 30 days prior written notice of such termination.",
+      "number": "4",
+      "closest_match": "In the event of any dispute arising under this Agreement, the parties shall first attempt to resolve the matter through binding arbitration administered by the American Arbitration Association.",
+      "similarity": 0.6590176820755005,
+      "metadata": {
+        "word_count": 27,
+        "char_count": 162,
+        "has_conditions": false,
+        "has_exceptions": false,
+        "is_title": false
+      }
+    }
+  ],
+  "only_in_doc2": [
+    {
+      "text": "In the event of any dispute arising under this Agreement, the parties shall first attempt to resolve the matter through binding arbitration administered by the American Arbitration Association.",
+      "number": "4",
+      "closest_match": "Either party may terminate this Agreement at any time, without cause, by providing the other party with at least 30 days prior written notice of such termination.",
+      "similarity": 0.6590176820755005,
+      "metadata": {
+        "word_count": 28,
+        "char_count": 193,
+        "has_conditions": true,
+        "has_exceptions": false,
+        "is_title": false
+      }
+    }
+  ],
+  "total_doc1": 4,
+  "total_doc2": 4,
+  "matching_count": 3,
+  "processing_time": 37.7608163356781,
+  "timestamp": "2026-06-25T12:22:37.050666"
+}
