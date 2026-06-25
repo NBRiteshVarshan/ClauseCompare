@@ -1,20 +1,26 @@
-#📄 Local Document Diff Agent (Offline LLM System)
+# 📄 Local Document Diff Agent (Offline LLM System)
 
-A fully offline, privacy-first document comparison engine powered by local LLM inference.
+A fully offline, privacy-first document comparison engine powered by local LLM inference.  
 It detects structural and semantic differences between two documents and presents a structured compliance report through a Streamlit interface.
 
-#🧠 Overview
+---
+
+## 🧠 Overview
 
 This system compares two documents (PDF, DOCX, TXT) and performs:
 
-📌 Structural diffing (added / removed clauses)
-🧠 Semantic change detection using a local LLM
-⚖️ Risk classification of clause modifications
-📊 Interactive UI for reviewing differences
+- 📌 Structural diffing (added / removed clauses)  
+- 🧠 Semantic change detection using a local LLM  
+- ⚖️ Risk classification of clause modifications  
+- 📊 Interactive UI for reviewing differences  
 
 All processing happens locally on your machine—no cloud APIs, no data transmission.
 
-#🏗️ Architecture
+---
+
+## 🏗️ Architecture
+
+
 Document A ─┐
             ├── Parser (PDF/DOCX/Text)
 Document B ─┘
@@ -28,7 +34,11 @@ Local LLM (Qwen / Phi via Ollama)
 Structured JSON Output
          ↓
 Streamlit UI Dashboard
-🔒 Privacy Model
+
+---
+
+## 🔒 Privacy Model
+
 ✔ Fully offline execution
 ✔ No external APIs or cloud inference
 ✔ No telemetry or logging services
@@ -40,13 +50,16 @@ PyMuPDF
 docx2txt
 Ollama
 Local LLMs (e.g., Qwen, Phi)
-#🤖 Supported Models
+
+---
+
+## 🤖 Supported Models
 
 Run locally via Ollama:
 
 ollama pull qwen2.5:7b
 
-#Other supported models:
+Other supported models:
 
 Phi-4 Mini
 Mistral Small
@@ -76,12 +89,16 @@ local-doc-diff-agent/
 │
 ├── app.py              # Streamlit UI
 ├── agent.py            # Core orchestration engine
-├── parser.py           # Document parsing + clause extraction
-├── llm.py              # Local LLM inference layer
-├── schemas.py          # Structured output schema
+├── parser.py          # Document parsing + clause extraction
+├── llm.py             # Local LLM inference layer
+├── schemas.py         # Structured output schema
 ├── requirements.txt
 └── README.md
-🧪 Features
+
+---
+
+## 🧪 Features
+
 ✔ Structural Diffing
 
 Detects:
@@ -113,13 +130,18 @@ No internet required after model download.
   "risk": "High"
 }
 
-#🔐 Use Cases
+---
+
+## 🔐 Use Cases
+
 Legal contract review
 Compliance audits
 Procurement comparison
 Policy version tracking
 Internal document governance
 
-#⚠️ Disclaimer
+---
+
+## ⚠️ Disclaimer
 
 This tool is intended for assistance purposes only and does not replace professional legal review.
