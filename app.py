@@ -55,8 +55,14 @@ def main():
         st.session_state.extraction_config['merge_threshold'] = merge_len
 
         st.subheader("🎯 Comparison Settings")
-        sim_threshold = st.slider("Similarity Threshold", 0.1, 0.9, 0.3, 0.05,
-                                  help="Minimum similarity to consider a candidate for LLM check.")
+        sim_threshold = st.slider(
+            "Similarity Threshold",
+            min_value=0.1,
+            max_value=0.9,
+            value=0.4,
+            step=0.05,
+            help="Minimum similarity to consider a candidate for LLM check."
+        )
 
         st.subheader("🧠 LLM Settings")
         st.info("Using Qwen2.5:7b (Local)")

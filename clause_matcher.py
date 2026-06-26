@@ -8,7 +8,7 @@ import ollama
 from utils import generate_clause_id
 
 class LegalClauseMatcher:
-    def __init__(self, embedding_model: str = 'nomic-ai/nomic-embed-text-v1.5'):
+    def __init__(self, embedding_model: str = 'all-MiniLM-L6-v2'):
         print(f"Loading embedding model: {embedding_model}")
         self.embedder = SentenceTransformer(embedding_model)
         self.cache = {}
@@ -25,11 +25,6 @@ class LegalClauseMatcher:
                 self.cache[cid] = emb
                 embeddings.append(emb)
         return np.array(embeddings)
-
-    def find_candidates(self, query_emb, target_embs, k=5):
-        sims = cosine_similarity([query_emb], target_embs)[0]
-        top = np.argsort(sims)[-k:][::-1]
-        return top.tolist(), sims[top].tolist()
 
     def compare_with_llm(self, clause_a, clause_b):
         try:
@@ -66,100 +61,178 @@ Respond in JSON format with these keys:
 
     def match_documents(self, doc1_clauses, doc2_clauses,
                         doc1_name="Document 1", doc2_name="Document 2",
-                        similarity_threshold=0.3, high_similarity_threshold=0.8):
+                        similarity_threshold=0.4,
+                        high_similarity_threshold=0.85,
+                        match_threshold=0.5):
+        
         start = time.time()
         print("Generating embeddings...")
         emb1 = self.get_embeddings(doc1_clauses, doc1_name)
         emb2 = self.get_embeddings(doc2_clauses, doc2_name)
 
-        matched_doc2 = [False] * len(doc2_clauses)
-        only_in_doc1 = []
-        matching_details = []
+        n1 = len(doc1_clauses)
+        n2 = len(doc2_clauses)
 
-        print("Comparing clauses...")
-        for i, clause1 in enumerate(doc1_clauses):
-            candidates, sims = self.find_candidates(emb1[i], emb2, k=5)
-            top_sim = sims[0] if sims else 0.0
-            top_idx = candidates[0] if candidates else -1
+        # Full similarity matrix
+        sim_matrix = cosine_similarity(emb1, emb2)
 
-            found = False
-            best = None
-            for j, (idx, sim) in enumerate(zip(candidates, sims)):
+        # Track matches
+        matched_doc1 = [False] * n1
+        matched_doc2 = [False] * n2
+        
+        # Store match details for each doc1 clause
+        match_pairs = []  # list of (doc1_idx, doc2_idx, similarity, reason)
+
+        # STEP 1: Mutual best matching
+        print("Step 1: Finding mutual best matches...")
+        best1 = np.argmax(sim_matrix, axis=1)
+        best_sim1 = sim_matrix[np.arange(n1), best1]
+        best2 = np.argmax(sim_matrix, axis=0)
+
+        mutual_count = 0
+        for i in range(n1):
+            j = best1[i]
+            sim = best_sim1[i]
+            if best2[j] == i and sim >= match_threshold:
+                if not matched_doc1[i] and not matched_doc2[j]:
+                    matched_doc1[i] = True
+                    matched_doc2[j] = True
+                    match_pairs.append((i, j, sim, 'Mutual best match'))
+                    mutual_count += 1
+
+        print(f"  → {mutual_count} mutual best matches found")
+
+        # STEP 2: Greedy matching (Doc1 → Doc2)
+        print("Step 2: Greedy matching remaining clauses...")
+        greedy_count = 0
+        llm_count = 0
+        
+        for i in range(n1):
+            if matched_doc1[i]:
+                continue  # already matched
+
+            # Get top candidates for this doc1 clause
+            sims = sim_matrix[i, :]  # similarities to all doc2 clauses
+            # Sort by similarity descending
+            sorted_indices = np.argsort(sims)[::-1]
+            
+            matched = False
+            best_match_info = None
+
+            for j in sorted_indices:
+                if matched_doc2[j]:
+                    continue  # this doc2 clause is already taken
+                
+                sim = sims[j]
+                
                 if sim < similarity_threshold:
-                    continue
+                    break  # no more candidates above threshold
+
                 if sim >= high_similarity_threshold:
-                    found = True
-                    best = {'clause_idx': idx, 'similarity': sim, 'confidence': 1.0,
-                            'reason': 'High similarity match (≥0.8)', 'key_differences': [], 'used_llm': False}
-                    matched_doc2[idx] = True
-                    break
-                # LLM
-                clause2 = doc2_clauses[idx]
-                llm_res = self.compare_with_llm(clause1['text'], clause2['text'])
-                if llm_res.get('match', False) and llm_res.get('confidence', 0) > 0.7:
-                    found = True
-                    best = {'clause_idx': idx, 'similarity': sim,
-                            'confidence': llm_res.get('confidence', 0),
-                            'reason': llm_res.get('reason', 'LLM match'),
-                            'key_differences': llm_res.get('key_differences', []),
-                            'used_llm': True}
-                    matched_doc2[idx] = True
+                    # High similarity – instant match
+                    matched_doc1[i] = True
+                    matched_doc2[j] = True
+                    match_pairs.append((i, j, sim, f'High similarity (≥{high_similarity_threshold})'))
+                    matched = True
+                    greedy_count += 1
                     break
 
-            print(f"Progress: {i+1}/{len(doc1_clauses)} (top sim: {top_sim:.3f})")
-            matching_details.append({
-                'clause_number': clause1.get('number', str(i+1)),
-                'clause_text': clause1['text'],
-                'found_match': found,
-                'best_match': best,
-                'top_similarity': top_sim,
-                'top_match_idx': top_idx
-            })
-            if not found:
-                closest = top_idx if top_idx >= 0 else 0
+                # Borderline – use LLM
+                clause1 = doc1_clauses[i]
+                clause2 = doc2_clauses[j]
+                llm_result = self.compare_with_llm(clause1['text'], clause2['text'])
+                
+                if llm_result.get('match', False) and llm_result.get('confidence', 0) > 0.7:
+                    matched_doc1[i] = True
+                    matched_doc2[j] = True
+                    match_pairs.append((i, j, sim, llm_result.get('reason', 'LLM match')))
+                    matched = True
+                    llm_count += 1
+                    break
+
+            if not matched:
+                # This doc1 clause remains unmatched
+                pass
+
+        print(f"  → {greedy_count} greedy matches, {llm_count} via LLM")
+
+        # Build the results
+        matching_details = []
+        only_in_doc1 = []
+        
+        # Map doc1 index to its match (doc2 index and similarity)
+        match_map = {}
+        for i, j, sim, reason in match_pairs:
+            match_map[i] = (j, sim, reason)
+
+        for i, clause1 in enumerate(doc1_clauses):
+            if i in match_map:
+                j, sim, reason = match_map[i]
+                clause2 = doc2_clauses[j]
+                matching_details.append({
+                    'clause_number': clause1.get('number', str(i+1)),
+                    'clause_text': clause1['text'],
+                    'found_match': True,
+                    'best_match': {
+                        'clause_idx': j,
+                        'similarity': sim,
+                        'confidence': 1.0 if 'high' in reason.lower() or 'mutual' in reason.lower() else 0.9,
+                        'reason': reason,
+                        'key_differences': [],
+                        'used_llm': 'LLM' in reason
+                    },
+                    'top_similarity': sim,
+                    'top_match_idx': j
+                })
+            else:
+                # Unmatched doc1
+                top_j = np.argmax(sim_matrix[i, :])
+                top_sim = sim_matrix[i, top_j]
+                matching_details.append({
+                    'clause_number': clause1.get('number', str(i+1)),
+                    'clause_text': clause1['text'],
+                    'found_match': False,
+                    'best_match': None,
+                    'top_similarity': top_sim,
+                    'top_match_idx': top_j
+                })
                 only_in_doc1.append({
                     'text': clause1['text'],
                     'number': clause1.get('number', str(i+1)),
-                    'closest_match': doc2_clauses[closest]['text'] if closest < len(doc2_clauses) else "",
+                    'closest_match': doc2_clauses[top_j]['text'] if top_j < n2 else "",
                     'similarity': top_sim,
                     'metadata': clause1.get('metadata', {})
                 })
 
-        # Doc2 best similarities
-        doc2_best_sims = []
-        for j in range(len(doc2_clauses)):
-            sims = cosine_similarity([emb2[j]], emb1)[0]
-            doc2_best_sims.append(sims.max())
-
+        # Collect unmatched doc2 clauses
         only_in_doc2 = []
-        for j, (clause2, matched) in enumerate(zip(doc2_clauses, matched_doc2)):
-            if not matched:
+        for j in range(n2):
+            if not matched_doc2[j]:
                 sims = cosine_similarity([emb2[j]], emb1)[0]
                 best_idx = np.argmax(sims)
                 only_in_doc2.append({
-                    'text': clause2['text'],
-                    'number': clause2.get('number', str(j+1)),
-                    'closest_match': doc1_clauses[best_idx]['text'] if best_idx < len(doc1_clauses) else "",
+                    'text': doc2_clauses[j]['text'],
+                    'number': doc2_clauses[j].get('number', str(j+1)),
+                    'closest_match': doc1_clauses[best_idx]['text'] if best_idx < n1 else "",
                     'similarity': sims[best_idx],
-                    'metadata': clause2.get('metadata', {})
+                    'metadata': doc2_clauses[j].get('metadata', {})
                 })
 
         elapsed = time.time() - start
-        llm_count = sum(1 for m in matching_details if m['found_match'] and m['best_match'] and m['best_match'].get('used_llm', True))
-        high_count = sum(1 for m in matching_details if m['found_match'] and m['best_match'] and not m['best_match'].get('used_llm', True))
-        print(f"✅ Matches: {sum(1 for m in matching_details if m['found_match'])} total ({high_count} via high-sim, {llm_count} via LLM)")
+        matching_count = len(match_pairs)
+        print(f"✅ Final: {matching_count} matches total")
 
         return {
             'only_in_doc1': only_in_doc1,
             'only_in_doc2': only_in_doc2,
             'matching_details': matching_details,
-            'total_doc1': len(doc1_clauses),
-            'total_doc2': len(doc2_clauses),
-            'matching_count': sum(1 for m in matching_details if m['found_match']),
+            'total_doc1': n1,
+            'total_doc2': n2,
+            'matching_count': matching_count,
             'processing_time': elapsed,
             'similarity_threshold': similarity_threshold,
             'high_similarity_threshold': high_similarity_threshold,
             'llm_matches': llm_count,
-            'high_sim_matches': high_count,
-            'doc2_best_similarities': doc2_best_sims
+            'high_sim_matches': greedy_count + mutual_count,
+            'doc2_best_similarities': [0.0] * n2
         }
