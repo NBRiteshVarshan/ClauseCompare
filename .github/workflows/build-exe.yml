@@ -1,0 +1,35 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python Runtime
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install PyInstaller and Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        if (Test-Path requirements.txt) { pip install -r requirements.txt }
+
+    - name: Compile Standalone .EXE
+      run: |
+        pyinstaller --onefile --windowed --copy-metadata streamlit --collect-data streamlit --add-data "app.py;." --add-data "clause_matcher.py;." --add-data "document_processor.py;." --add-data "utils.py;." --add-data ".streamlit/config.toml;.streamlit" launcher.py
+
+    - name: Export Executable App
+      uses: actions/upload-artifact@v4
+      with:
+        name: Windows-Offline-Agent
+        path: dist/launcher.exe
