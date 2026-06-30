@@ -13,7 +13,7 @@ class LegalClauseMatcher:
         print(f"Loading embedding model: {embedding_model}")
         self.embedder = SentenceTransformer(embedding_model)
         self.cache = {}
-        self.llm_model = 'qwen2.5:7b'
+        self.llm_model = 'llama3.2:3b'
 
     def get_embeddings(self, clauses: List[Dict], doc_name: str) -> np.ndarray:
         embeddings = []
