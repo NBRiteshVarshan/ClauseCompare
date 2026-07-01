@@ -13,7 +13,7 @@ class LegalClauseMatcher:
         print(f"Loading embedding model: {embedding_model}")
         self.embedder = SentenceTransformer(embedding_model)
         self.cache = {}
-        self.llm_model = 'llama3.2:3b'
+        self.llm_model = 'llama3.2:3b'  # faster than qwen
 
     def get_embeddings(self, clauses: List[Dict], doc_name: str) -> np.ndarray:
         embeddings = []
@@ -27,10 +27,11 @@ class LegalClauseMatcher:
                 embeddings.append(emb)
         return np.array(embeddings)
 
-    def compare_with_llm(self, clause_a, clause_b):
-        """Synchronous LLM call – used by ThreadPoolExecutor."""
-        try:
-            prompt = """You are comparing two legal clauses. They match if:
+    def compare_with_llm(self, clause_a, clause_b, retries=2):
+        """Synchronous LLM call with retry logic."""
+        for attempt in range(retries + 1):
+            try:
+                prompt = """You are comparing two legal clauses. They match if:
 1. They create the same obligation (who must do what)
 2. They grant the same right or power
 3. They have the same conditions and exceptions
@@ -49,17 +50,21 @@ Respond in JSON format with these keys:
 - "confidence": 0-1 (float)
 - "key_differences": ["difference1", "difference2"] (list)
 - "reason": "brief explanation" (string)"""
-            response = ollama.chat(
-                model=self.llm_model,
-                messages=[
-                    {'role': 'system', 'content': 'You are a legal text comparison expert. Respond only in JSON format.'},
-                    {'role': 'user', 'content': prompt.format(clause_a=clause_a[:500], clause_b=clause_b[:500])}
-                ]
-            )
-            return json.loads(response['message']['content'])
-        except Exception as e:
-            print(f"LLM error: {e}")
-            return {'match': False, 'confidence': 0.0, 'reason': str(e)}
+                response = ollama.chat(
+                    model=self.llm_model,
+                    messages=[
+                        {'role': 'system', 'content': 'You are a legal text comparison expert. Respond only in JSON format.'},
+                        {'role': 'user', 'content': prompt.format(clause_a=clause_a[:500], clause_b=clause_b[:500])}
+                    ]
+                )
+                result = json.loads(response['message']['content'])
+                return result
+            except Exception as e:
+                print(f"LLM error (attempt {attempt+1}): {e}")
+                if attempt == retries:
+                    return {'match': False, 'confidence': 0.0, 'reason': str(e)}
+                time.sleep(1)  # wait before retry
+        return {'match': False, 'confidence': 0.0, 'reason': 'Max retries exceeded'}
 
     def match_documents(self, doc1_clauses, doc2_clauses,
                         doc1_name="Document 1", doc2_name="Document 2",
@@ -79,58 +84,51 @@ Respond in JSON format with these keys:
         sim_matrix = cosine_similarity(emb1, emb2)
 
         # ------------------------------------------------------------
-        # STEP 1: Find best match for each Doc1 clause (≥ 0.5)
-        # Build map: Doc2[j] → list of (Doc1_idx, similarity)
+        # STEP 1: Best-Match Mapping (HashMap)
         # ------------------------------------------------------------
-        best_match_map = {}  # key: Doc2 index, value: list of (Doc1_idx, similarity)
+        best_match_map = {}
 
         for i in range(n1):
-            # Find the best match for this Doc1 clause
             best_j = np.argmax(sim_matrix[i, :])
             best_sim = sim_matrix[i, best_j]
-
             if best_sim >= match_threshold:  # ≥ 0.5
                 if best_j not in best_match_map:
                     best_match_map[best_j] = []
                 best_match_map[best_j].append((i, best_sim))
 
-        print(f"Step 1: {len(best_match_map)} Doc2 clauses claimed as best match by Doc1 clauses")
+        print(f"Step 1: {len(best_match_map)} Doc2 clauses claimed as best match")
 
         # ------------------------------------------------------------
-        # STEP 2: Resolve conflicts – pick highest similarity per Doc2
+        # STEP 2: Resolve conflicts – pick highest similarity
         # ------------------------------------------------------------
         matched_doc1 = [False] * n1
         matched_doc2 = [False] * n2
-        match_pairs = []  # list of (doc1_idx, doc2_idx, similarity, reason)
+        match_pairs = []
 
         for j, claimants in best_match_map.items():
             if len(claimants) == 1:
-                # Only one Doc1 clause claims this Doc2 – pair them
                 i, sim = claimants[0]
                 matched_doc1[i] = True
                 matched_doc2[j] = True
                 match_pairs.append((i, j, sim, 'Best match (unique claimant)'))
             else:
-                # Multiple Doc1 clauses claim this Doc2 – pick the highest similarity
-                # Sort by similarity descending
                 claimants.sort(key=lambda x: x[1], reverse=True)
                 winner_i, winner_sim = claimants[0]
                 matched_doc1[winner_i] = True
                 matched_doc2[j] = True
-                match_pairs.append((winner_i, j, winner_sim, 'Best match (highest similarity among claimants)'))
+                match_pairs.append((winner_i, j, winner_sim, 'Best match (highest similarity)'))
 
-        print(f"Step 2: {len(match_pairs)} direct matches assigned from best-match mapping")
+        print(f"Step 2: {len(match_pairs)} direct matches assigned")
 
         # ------------------------------------------------------------
-        # STEP 3: Handle remaining unmatched Doc1 clauses (greedy fallback)
+        # STEP 3: Greedy fallback for unmatched Doc1 clauses
         # ------------------------------------------------------------
-        ambiguous_pairs = []  # list of (doc1_idx, doc2_idx, similarity)
+        ambiguous_pairs = []  # only for 0.4 ≤ sim < 0.5
 
         for i in range(n1):
             if matched_doc1[i]:
                 continue
 
-            # Get top candidates for this doc1 clause
             sims = sim_matrix[i, :]
             sorted_indices = np.argsort(sims)[::-1]
 
@@ -142,43 +140,44 @@ Respond in JSON format with these keys:
 
                 sim = sims[j]
 
-                if sim < similarity_threshold:
-                    break  # no more candidates above threshold
+                if sim < similarity_threshold:  # < 0.4
+                    break  # no more candidates
 
-                if sim >= high_similarity_threshold:
-                    # High similarity – instant match
+                # NEW: instant match for any sim >= 0.5
+                if sim >= 0.5:
                     matched_doc1[i] = True
                     matched_doc2[j] = True
-                    match_pairs.append((i, j, sim, f'High similarity (≥{high_similarity_threshold})'))
+                    match_pairs.append((i, j, sim, 'Embedding match (≥0.5)'))
                     matched = True
                     break
 
+                # Only 0.4 ≤ sim < 0.5 goes to LLM
                 elif sim >= similarity_threshold:
-                    # Borderline – collect for LLM verification
                     ambiguous_pairs.append((i, j, sim))
+                    # Collect this candidate; we'll check all of them later
 
-            # If matched, we're done; otherwise it will go to LLM or remain unique
+            # If we found a match, great. Otherwise, we'll handle via LLM.
 
-        print(f"Step 3: {len(ambiguous_pairs)} ambiguous candidates for LLM")
+        print(f"Step 3: {len(ambiguous_pairs)} borderline candidates (0.4–0.5) for LLM")
 
         # ------------------------------------------------------------
-        # STEP 4: Process ambiguous pairs with LLM (concurrent)
+        # STEP 4: LLM verification for borderline cases (0.4–0.5)
         # ------------------------------------------------------------
         if ambiguous_pairs:
-            print(f"⚡ Processing {len(ambiguous_pairs)} ambiguous candidates with LLM...")
+            print(f"⚡ Processing {len(ambiguous_pairs)} borderline candidates with LLM...")
 
-            # Sort by similarity descending (higher chance of match first)
+            # Sort by similarity descending
             ambiguous_pairs.sort(key=lambda x: x[2], reverse=True)
 
-            # Filter: only include candidates where both clauses are still unmatched
+            # Filter: only include pairs where both are still unmatched
             filtered_pairs = []
             for i, j, sim in ambiguous_pairs:
                 if not matched_doc1[i] and not matched_doc2[j]:
                     filtered_pairs.append((i, j, sim))
 
-            if filtered_pairs:
-                print(f"  → {len(filtered_pairs)} candidates after filtering")
+            print(f"  → {len(filtered_pairs)} candidates after filtering")
 
+            if filtered_pairs:
                 llm_matches = 0
                 max_workers = 5
 
@@ -192,10 +191,16 @@ Respond in JSON format with these keys:
                         for i, j, sim in filtered_pairs
                     }
 
+                    completed = 0
                     for future in as_completed(future_to_pair):
                         i, j, sim = future_to_pair[future]
+                        completed += 1
+                        if completed % 10 == 0:
+                            print(f"  → LLM progress: {completed}/{len(filtered_pairs)}")
+
                         if matched_doc1[i] or matched_doc2[j]:
                             continue
+
                         try:
                             result = future.result()
                             if result.get('match', False) and result.get('confidence', 0) > 0.7:
@@ -237,7 +242,6 @@ Respond in JSON format with these keys:
                     'top_match_idx': j
                 })
             else:
-                # Unmatched doc1
                 top_j = np.argmax(sim_matrix[i, :])
                 top_sim = sim_matrix[i, top_j]
                 matching_details.append({
@@ -272,11 +276,10 @@ Respond in JSON format with these keys:
 
         elapsed = time.time() - start
 
-        # Compute counts
         llm_matches = sum(1 for _, _, _, reason in match_pairs if 'LLM' in reason)
         high_matches = len(match_pairs) - llm_matches
 
-        print(f"✅ Final matches: {len(match_pairs)} total ({high_matches} via high-sim, {llm_matches} via LLM)")
+        print(f"✅ Final matches: {len(match_pairs)} total ({high_matches} via embedding, {llm_matches} via LLM)")
         print(f"⏱️  Total time: {elapsed:.2f}s")
 
         return {
