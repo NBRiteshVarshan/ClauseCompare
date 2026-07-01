@@ -78,41 +78,56 @@ Respond in JSON format with these keys:
         # Full similarity matrix
         sim_matrix = cosine_similarity(emb1, emb2)
 
-        # Track matches – boolean array only (O(1) lookup)
+        # ------------------------------------------------------------
+        # STEP 1: Find best match for each Doc1 clause (≥ 0.5)
+        # Build map: Doc2[j] → list of (Doc1_idx, similarity)
+        # ------------------------------------------------------------
+        best_match_map = {}  # key: Doc2 index, value: list of (Doc1_idx, similarity)
+
+        for i in range(n1):
+            # Find the best match for this Doc1 clause
+            best_j = np.argmax(sim_matrix[i, :])
+            best_sim = sim_matrix[i, best_j]
+
+            if best_sim >= match_threshold:  # ≥ 0.5
+                if best_j not in best_match_map:
+                    best_match_map[best_j] = []
+                best_match_map[best_j].append((i, best_sim))
+
+        print(f"Step 1: {len(best_match_map)} Doc2 clauses claimed as best match by Doc1 clauses")
+
+        # ------------------------------------------------------------
+        # STEP 2: Resolve conflicts – pick highest similarity per Doc2
+        # ------------------------------------------------------------
+        matched_doc1 = [False] * n1
         matched_doc2 = [False] * n2
         match_pairs = []  # list of (doc1_idx, doc2_idx, similarity, reason)
 
-        # STEP 1: Mutual best matching
-        print("Step 1: Finding mutual best matches...")
-        best1 = np.argmax(sim_matrix, axis=1)
-        best_sim1 = sim_matrix[np.arange(n1), best1]
-        best2 = np.argmax(sim_matrix, axis=0)
+        for j, claimants in best_match_map.items():
+            if len(claimants) == 1:
+                # Only one Doc1 clause claims this Doc2 – pair them
+                i, sim = claimants[0]
+                matched_doc1[i] = True
+                matched_doc2[j] = True
+                match_pairs.append((i, j, sim, 'Best match (unique claimant)'))
+            else:
+                # Multiple Doc1 clauses claim this Doc2 – pick the highest similarity
+                # Sort by similarity descending
+                claimants.sort(key=lambda x: x[1], reverse=True)
+                winner_i, winner_sim = claimants[0]
+                matched_doc1[winner_i] = True
+                matched_doc2[j] = True
+                match_pairs.append((winner_i, j, winner_sim, 'Best match (highest similarity among claimants)'))
 
-        mutual_count = 0
-        for i in range(n1):
-            j = best1[i]
-            sim = best_sim1[i]
-            if best2[j] == i and sim >= match_threshold:
-                if not matched_doc2[j]:
-                    matched_doc2[j] = True
-                    match_pairs.append((i, j, sim, 'Mutual best match'))
-                    mutual_count += 1
+        print(f"Step 2: {len(match_pairs)} direct matches assigned from best-match mapping")
 
-        print(f"  → {mutual_count} mutual best matches found")
-
-        # STEP 2: Greedy matching with high-similarity instant matches
-        print("Step 2: Greedy matching remaining clauses...")
-        instant_count = 0
+        # ------------------------------------------------------------
+        # STEP 3: Handle remaining unmatched Doc1 clauses (greedy fallback)
+        # ------------------------------------------------------------
         ambiguous_pairs = []  # list of (doc1_idx, doc2_idx, similarity)
 
         for i in range(n1):
-            # Check if already matched via mutual best
-            already_matched = False
-            for pair in match_pairs:
-                if pair[0] == i:
-                    already_matched = True
-                    break
-            if already_matched:
+            if matched_doc1[i]:
                 continue
 
             # Get top candidates for this doc1 clause
@@ -132,59 +147,42 @@ Respond in JSON format with these keys:
 
                 if sim >= high_similarity_threshold:
                     # High similarity – instant match
+                    matched_doc1[i] = True
                     matched_doc2[j] = True
                     match_pairs.append((i, j, sim, f'High similarity (≥{high_similarity_threshold})'))
                     matched = True
-                    instant_count += 1
                     break
 
                 elif sim >= similarity_threshold:
                     # Borderline – collect for LLM verification
                     ambiguous_pairs.append((i, j, sim))
-                    # Don't break – we want to see all candidates
-                    # but we only collect the best one per doc1 clause
-                    # Actually, for proper matching we should collect all candidates
-                    # but we'll process them in order of similarity
 
-            # If we didn't find an instant match, we'll handle via LLM later
-            # The ambiguous_pairs list contains all borderline candidates
+            # If matched, we're done; otherwise it will go to LLM or remain unique
 
-        print(f"  → {instant_count} instant matches, {len(ambiguous_pairs)} ambiguous candidates")
+        print(f"Step 3: {len(ambiguous_pairs)} ambiguous candidates for LLM")
 
-        # STEP 3: Process ambiguous pairs with LLM (concurrent)
+        # ------------------------------------------------------------
+        # STEP 4: Process ambiguous pairs with LLM (concurrent)
+        # ------------------------------------------------------------
         if ambiguous_pairs:
             print(f"⚡ Processing {len(ambiguous_pairs)} ambiguous candidates with LLM...")
 
             # Sort by similarity descending (higher chance of match first)
             ambiguous_pairs.sort(key=lambda x: x[2], reverse=True)
 
-            # Use ThreadPoolExecutor for concurrent LLM calls
-            llm_matches = 0
-
-            # First, filter ambiguous_pairs to only include candidates where doc2 is still unmatched
-            # and doc1 is not yet matched
+            # Filter: only include candidates where both clauses are still unmatched
             filtered_pairs = []
             for i, j, sim in ambiguous_pairs:
-                # Check if doc1 already matched
-                doc1_matched = False
-                for pair in match_pairs:
-                    if pair[0] == i:
-                        doc1_matched = True
-                        break
-                if doc1_matched:
-                    continue
-                if matched_doc2[j]:
-                    continue
-                filtered_pairs.append((i, j, sim))
+                if not matched_doc1[i] and not matched_doc2[j]:
+                    filtered_pairs.append((i, j, sim))
 
             if filtered_pairs:
                 print(f"  → {len(filtered_pairs)} candidates after filtering")
 
-                # Limit concurrent calls to avoid overwhelming Ollama
+                llm_matches = 0
                 max_workers = 5
 
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit all LLM tasks
                     future_to_pair = {
                         executor.submit(
                             self.compare_with_llm,
@@ -194,30 +192,26 @@ Respond in JSON format with these keys:
                         for i, j, sim in filtered_pairs
                     }
 
-                    # Process results as they complete
                     for future in as_completed(future_to_pair):
                         i, j, sim = future_to_pair[future]
+                        if matched_doc1[i] or matched_doc2[j]:
+                            continue
                         try:
                             result = future.result()
-                            # Check if both clauses are still unmatched
-                            doc1_matched = False
-                            for pair in match_pairs:
-                                if pair[0] == i:
-                                    doc1_matched = True
-                                    break
-
-                            if not doc1_matched and not matched_doc2[j]:
-                                if result.get('match', False) and result.get('confidence', 0) > 0.7:
-                                    matched_doc2[j] = True
-                                    match_pairs.append((i, j, sim, result.get('reason', 'LLM match')))
-                                    llm_matches += 1
-                                    print(f"  ✅ LLM matched: Doc1[{i}] ↔ Doc2[{j}] (sim: {sim:.3f})")
+                            if result.get('match', False) and result.get('confidence', 0) > 0.7:
+                                matched_doc1[i] = True
+                                matched_doc2[j] = True
+                                match_pairs.append((i, j, sim, result.get('reason', 'LLM match')))
+                                llm_matches += 1
+                                print(f"  ✅ LLM matched: Doc1[{i}] ↔ Doc2[{j}] (sim: {sim:.3f})")
                         except Exception as e:
                             print(f"  ❌ LLM error for pair ({i}, {j}): {e}")
 
                 print(f"  → {llm_matches} LLM matches found")
 
-        # Build matching_details and only_in_doc1
+        # ------------------------------------------------------------
+        # STEP 5: Build result structures
+        # ------------------------------------------------------------
         match_map = {i: (j, sim, reason) for i, j, sim, reason in match_pairs}
 
         matching_details = []
@@ -234,7 +228,7 @@ Respond in JSON format with these keys:
                     'best_match': {
                         'clause_idx': j,
                         'similarity': sim,
-                        'confidence': 1.0 if 'high' in reason.lower() or 'mutual' in reason.lower() else 0.9,
+                        'confidence': 1.0 if 'high' in reason.lower() or 'match' in reason.lower() else 0.9,
                         'reason': reason,
                         'key_differences': [],
                         'used_llm': 'LLM' in reason
