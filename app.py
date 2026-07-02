@@ -56,16 +56,16 @@ def main():
 
         st.subheader("🎯 Comparison Settings")
         sim_threshold = st.slider(
-            "Similarity Threshold",
+            "Similarity Threshold (LLM range starts here)",
             min_value=0.1,
             max_value=0.9,
             value=0.4,
             step=0.05,
-            help="Minimum similarity to consider a candidate for LLM check."
+            help="Clauses with similarity in [0.4, 0.5) go to LLM; ≥0.5 are instant matches."
         )
 
         st.subheader("🧠 LLM Settings")
-        st.info("Using llama3.2:3b (Local)")
+        st.info("Using llama3.2:3b (local)")
         st.caption("✅ No data leaves your machine")
         st.divider()
 
@@ -141,27 +141,53 @@ def main():
     st.divider()
     _, mid, _ = st.columns([1,2,1])
     with mid:
-        compare = st.button("🔄 Compare Documents", use_container_width=True,
-                            disabled=not (st.session_state.doc1_clauses and st.session_state.doc2_clauses))
+        compare = st.button(
+            "🔄 Compare Documents",
+            use_container_width=True,
+            disabled=not (st.session_state.doc1_clauses and st.session_state.doc2_clauses)
+        )
+
+    # Progress bar placeholders (shown only during comparison)
+    progress_placeholder = st.empty()
+    status_placeholder = st.empty()
 
     if compare and st.session_state.doc1_clauses and st.session_state.doc2_clauses:
-        with st.spinner("Comparing documents... This may take a few minutes."):
+        with st.spinner("Preparing comparison..."):
             st.session_state.processing = True
             try:
                 matcher = LegalClauseMatcher()
+
+                # Define progress callback
+                def update_progress(progress, status):
+                    progress_placeholder.progress(progress)
+                    status_placeholder.text(status)
+
+                # Run comparison with progress updates
                 results = matcher.match_documents(
                     st.session_state.doc1_clauses,
                     st.session_state.doc2_clauses,
                     similarity_threshold=sim_threshold,
-                    high_similarity_threshold=0.8
+                    high_similarity_threshold=0.85,
+                    match_threshold=0.5,
+                    progress_callback=update_progress
                 )
+
                 st.session_state.comparison_results = results
                 st.session_state.processing = False
+
+                # Clear the progress bar after completion
+                progress_placeholder.empty()
+                status_placeholder.empty()
+
                 st.success(f"✅ Comparison complete! Processed {results['total_doc1']+results['total_doc2']} clauses in {results['processing_time']:.2f}s")
+                st.balloons()  # optional celebration
+
             except Exception as e:
                 st.session_state.processing = False
+                progress_placeholder.empty()
+                status_placeholder.empty()
                 st.error(f"Error: {e}")
-                st.info("Make sure Ollama is running and qwen2.5:7b is pulled.\n`ollama serve` and `ollama pull qwen2.5:7b`")
+                st.info("Make sure Ollama is running and llama3.2:3b is pulled.\n`ollama serve` and `ollama pull llama3.2:3b`")
 
     # Display results
     if st.session_state.comparison_results and not st.session_state.processing:
@@ -169,7 +195,7 @@ def main():
         doc1_clauses = st.session_state.doc1_clauses
         doc2_clauses = st.session_state.doc2_clauses
 
-        # ---- Build categories using the fixed function ----
+        # ---- Categories ----
         exact, partial, unique = categorize_results(results, doc1_clauses, doc2_clauses)
 
         total_clauses = results['total_doc1'] + results['total_doc2']
@@ -177,7 +203,7 @@ def main():
         unique_doc1 = sum(1 for u in unique if u['document'] == 'Document 1')
         unique_doc2 = sum(1 for u in unique if u['document'] == 'Document 2')
 
-        # ---- Summary metrics ----
+        # ---- Summary cards ----
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
@@ -222,7 +248,7 @@ def main():
         fig.update_layout(height=400, showlegend=False, plot_bgcolor='rgba(0,0,0,0)')
         st.plotly_chart(fig, use_container_width=True)
 
-        # ---- Three Categories (with separated unique) ----
+        # ---- Expanders for categories ----
         st.subheader("📂 Clause Categories")
         with st.expander(f"✅ Exact Matches (Similarity ≥ 0.999) — {len(exact)} pairs"):
             if exact:
@@ -250,10 +276,8 @@ def main():
             else:
                 st.info("No partial matches found.")
 
-        # ---- Unique expander with two sub-sections ----
         with st.expander(f"🔴 Unique Clauses (not matched) — {len(unique)} total"):
             if unique:
-                # Separate by document
                 unique_doc1_list = [u for u in unique if u['document'] == 'Document 1']
                 unique_doc2_list = [u for u in unique if u['document'] == 'Document 2']
 
@@ -318,22 +342,23 @@ def main():
                 'min_len': min_len,
                 'merge_len': merge_len,
                 'sim_threshold': sim_threshold,
-                'high_sim_threshold': 0.8,
+                'high_sim_threshold': 0.85,
                 'processing_time': f"{results['processing_time']:.2f}s",
                 'llm_matches': results.get('llm_matches', 0),
                 'high_sim_matches': results.get('high_sim_matches', 0)
             })
 
 if __name__ == "__main__":
+    # Check Ollama
     try:
         import ollama
         ollama.list()
     except Exception:
-        st.warning("⚠️ Ollama not detected. Please start Ollama and pull qwen2.5:7b.")
+        st.warning("⚠️ Ollama not detected. Please start Ollama and pull llama3.2:3b.")
         st.info("""
         To install:
         1. Download Ollama from https://ollama.ai
-        2. Run in terminal: `ollama pull qwen2.5:7b`
+        2. Run in terminal: `ollama pull llama3.2:3b`
         3. Run in terminal: `ollama serve`
         """)
     main()

@@ -1,10 +1,9 @@
 import re
-import fitz  # PyMuPDF
+import fitz
 import docx2txt
 from typing import List, Dict, Any
 
 class ClauseExtractor:
-    """Extract clauses from legal documents using text-block strategy"""
 
     def __init__(self, min_clause_length: int = 60, merge_threshold: int = 30):
         self.min_clause_length = min_clause_length
@@ -28,8 +27,11 @@ class ClauseExtractor:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
                 tmp_file.write(file_content)
                 tmp_path = tmp_file.name
-            text = docx2txt.process(tmp_path)
-            os.unlink(tmp_path)
+            try:
+                text = docx2txt.process(tmp_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
             return self.extract_clauses(text)
         except Exception as e:
             raise Exception(f"Failed to extract from DOCX: {str(e)}")
