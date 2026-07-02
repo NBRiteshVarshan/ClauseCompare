@@ -1,6 +1,7 @@
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime
+import html  # <-- for escaping user content
 
 from document_processor import ClauseExtractor, get_document_summary
 from clause_matcher import LegalClauseMatcher
@@ -12,6 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Static CSS – safe (no user data)
 st.markdown("""
     <style>
     .main-header { font-size: 2.5rem; color: #1E3A8A; text-align: center; margin-bottom: 2rem; }
@@ -36,6 +38,10 @@ def init_session_state():
         st.session_state.processing = False
     if 'extraction_config' not in st.session_state:
         st.session_state.extraction_config = {'min_clause_length': 60, 'merge_threshold': 30}
+
+def escape_text(text: str) -> str:
+    """Escape HTML special characters to prevent XSS."""
+    return html.escape(text)
 
 def main():
     st.markdown('<h1 class="main-header">Legal Document Comparator</h1>', unsafe_allow_html=True)
@@ -95,11 +101,13 @@ def main():
         if st.session_state.doc1_clauses:
             with st.expander(f"📋 View Clauses ({len(st.session_state.doc1_clauses)})"):
                 for idx, c in enumerate(st.session_state.doc1_clauses[:5]):
+                    # Escape user content before inserting into HTML
+                    safe_text = escape_text(c['text'][:300] + ("..." if len(c['text']) > 300 else ""))
                     st.markdown(f"""
                         <div class="clause-box">
                             <strong>Clause {c.get('number', idx+1)}</strong>
-                            <span style="color: #6B7280; font-size:0.8rem;">({c['metadata']['word_count']} words)</span><br>
-                            {c['text'][:300]}...
+                            <span style="color: #6B7280; font-size:0.8rem;">({c['metadata'].get('word_count', 0)} words)</span><br>
+                            {safe_text}
                         </div>
                     """, unsafe_allow_html=True)
                 if len(st.session_state.doc1_clauses) > 5:
@@ -122,11 +130,12 @@ def main():
         if st.session_state.doc2_clauses:
             with st.expander(f"📋 View Clauses ({len(st.session_state.doc2_clauses)})"):
                 for idx, c in enumerate(st.session_state.doc2_clauses[:5]):
+                    safe_text = escape_text(c['text'][:300] + ("..." if len(c['text']) > 300 else ""))
                     st.markdown(f"""
                         <div class="clause-box">
                             <strong>Clause {c.get('number', idx+1)}</strong>
-                            <span style="color: #6B7280; font-size:0.8rem;">({c['metadata']['word_count']} words)</span><br>
-                            {c['text'][:300]}...
+                            <span style="color: #6B7280; font-size:0.8rem;">({c['metadata'].get('word_count', 0)} words)</span><br>
+                            {safe_text}
                         </div>
                     """, unsafe_allow_html=True)
                 if len(st.session_state.doc2_clauses) > 5:
@@ -190,7 +199,6 @@ def main():
         unique_doc1 = sum(1 for u in unique if u['document'] == 'Document 1')
         unique_doc2 = sum(1 for u in unique if u['document'] == 'Document 2')
 
-
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
@@ -221,7 +229,6 @@ def main():
                 </div>
             """, unsafe_allow_html=True)
 
-
         st.subheader("Visual Analysis")
         fig = go.Figure(data=[
             go.Bar(
@@ -235,34 +242,41 @@ def main():
         fig.update_layout(height=400, showlegend=False, plot_bgcolor='rgba(0,0,0,0)')
         st.plotly_chart(fig, use_container_width=True)
 
-
         st.subheader("Clause Categories")
+
+        # Exact Matches – coloured boxes with escaped text
         with st.expander(f"✅ Exact Matches (Similarity ≥ 0.999) — {len(exact)} pairs"):
             if exact:
                 for m in exact:
+                    safe_doc1 = escape_text(m['doc1_text'])
+                    safe_doc2 = escape_text(m['doc2_text'])
                     st.markdown(f"""
                         <div class="exact-box">
-                            <strong>📄 Doc1 – Clause {m['doc1_num']}</strong><br>{m['doc1_text']}<br><br>
-                            <strong>📄 Doc2 – Clause {m['doc2_num']}</strong><br>{m['doc2_text']}<br><br>
+                            <strong>📄 Doc1 – Clause {m['doc1_num']}</strong><br>{safe_doc1}<br><br>
+                            <strong>📄 Doc2 – Clause {m['doc2_num']}</strong><br>{safe_doc2}<br><br>
                             <span style="color:#059669;">✅ Similarity: {m['similarity']:.3f}</span>
                         </div>
                     """, unsafe_allow_html=True)
             else:
                 st.info("No exact matches found.")
 
+        # Partial Matches – coloured boxes with escaped text
         with st.expander(f"🟡 Partial Matches (0.5 ≤ Similarity < 0.999) — {len(partial)} pairs"):
             if partial:
                 for m in partial:
+                    safe_doc1 = escape_text(m['doc1_text'])
+                    safe_doc2 = escape_text(m['doc2_text'])
                     st.markdown(f"""
                         <div class="partial-box">
-                            <strong>📄 Doc1 – Clause {m['doc1_num']}</strong><br>{m['doc1_text']}<br><br>
-                            <strong>📄 Doc2 – Clause {m['doc2_num']}</strong><br>{m['doc2_text']}<br><br>
+                            <strong>📄 Doc1 – Clause {m['doc1_num']}</strong><br>{safe_doc1}<br><br>
+                            <strong>📄 Doc2 – Clause {m['doc2_num']}</strong><br>{safe_doc2}<br><br>
                             <span style="color:#D97706;">🔶 Similarity: {m['similarity']:.3f}</span>
                         </div>
                     """, unsafe_allow_html=True)
             else:
                 st.info("No partial matches found.")
 
+        # Unique Clauses – coloured boxes with escaped text
         with st.expander(f"🔴 Unique Clauses (not matched) — {len(unique)} total"):
             if unique:
                 unique_doc1_list = [u for u in unique if u['document'] == 'Document 1']
@@ -271,9 +285,10 @@ def main():
                 if unique_doc1_list:
                     st.markdown("**Document 1 Unique:**")
                     for u in unique_doc1_list:
+                        safe_text = escape_text(u['text'])
                         st.markdown(f"""
                             <div class="unique-box">
-                                <strong>Clause {u['number']}</strong><br>{u['text']}<br>
+                                <strong>Clause {u['number']}</strong><br>{safe_text}<br>
                                 <span style="color:#DC2626;">❌ Best similarity: {u['similarity']:.3f}</span>
                             </div>
                         """, unsafe_allow_html=True)
@@ -281,9 +296,10 @@ def main():
                 if unique_doc2_list:
                     st.markdown("**Document 2 Unique:**")
                     for u in unique_doc2_list:
+                        safe_text = escape_text(u['text'])
                         st.markdown(f"""
                             <div class="unique-box">
-                                <strong>Clause {u['number']}</strong><br>{u['text']}<br>
+                                <strong>Clause {u['number']}</strong><br>{safe_text}<br>
                                 <span style="color:#DC2626;">❌ Best similarity: {u['similarity']:.3f}</span>
                             </div>
                         """, unsafe_allow_html=True)
@@ -292,7 +308,6 @@ def main():
                     st.info("No unique clauses found.")
             else:
                 st.info("All clauses are matched (no unique clauses).")
-
 
         st.subheader("Download Reports")
         txt_report = format_report(results)
@@ -321,7 +336,6 @@ def main():
                 file_name=f"comparison_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 mime="application/json"
             )
-
 
 if __name__ == "__main__":
     try:
